@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 
 /// Which speech-to-text engine is active.
 enum EngineKind: String, CaseIterable, Identifiable, Sendable {
+    case frenchSteno = "french_steno"
     case coreAI = "coreai_en"
     case multilingual = "multilingual_cjk"
 
@@ -12,22 +13,26 @@ enum EngineKind: String, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
+        case .frenchSteno:
+            "Français — Sténo v1 (EmbeddingGemma 2 CTC · Ponctué)"
         case .coreAI:
             "Anglais Ultra-Rapide (Core AI Reader v2 · 200k mots)"
         case .multilingual:
-            "Multilingue zh / en / ja / ko (Core ML + N-Gram v4)"
+            "Multilingual zh / en / ja / ko (Core ML + N-Gram v4)"
         }
     }
 
     var shortTitle: String {
         switch self {
-        case .coreAI: "Core AI Anglais v2"
-        case .multilingual: "Multilingue zh/en/ja/ko"
+        case .frenchSteno: "Français"
+        case .coreAI: "Anglais"
+        case .multilingual: "zh/en/ja/ko"
         }
     }
 
     var downloadSizeDescription: String {
         switch self {
+        case .frenchSteno: "~365 Mo (Sténo v1 Large · EmbeddingGemma 2 CTC Français)"
         case .coreAI: "~933 Mo (Hugging Face: mlboydaisuke/EmbeddingGemma-2-Transcribe-CoreAI)"
         case .multilingual: "~318 Mo (GitHub Release: TimHu950112/eg2-transcribe-zh-en-ja-ko v4.0)"
         }
@@ -118,8 +123,8 @@ final class AppModel {
 
     var phase: Phase = .starting
     var engineKind: EngineKind = {
-        let raw = UserDefaults.standard.string(forKey: "engineKind") ?? EngineKind.coreAI.rawValue
-        return EngineKind(rawValue: raw) ?? .coreAI
+        let raw = UserDefaults.standard.string(forKey: "engineKind") ?? EngineKind.frenchSteno.rawValue
+        return EngineKind(rawValue: raw) ?? .frenchSteno
     }() {
         didSet {
             UserDefaults.standard.set(engineKind.rawValue, forKey: "engineKind")
@@ -209,6 +214,7 @@ final class AppModel {
         didSet { UserDefaults.standard.set(textSize, forKey: "textSize") }
     }
 
+    private var frenchTranscriber: FrenchTranscriber?
     private var coreAITranscriber: Transcriber?
     private var multilingualTranscriber: MultilingualTranscriber?
     private let recorder = AudioRecorder()
@@ -216,6 +222,7 @@ final class AppModel {
     private let hud = FloatingHUDController()
     private var started = false
 
+    private static let frenchFolderKey = "frenchModelFolderPath"
     private static let folderKey = "modelFolderPath"
     private static let multilingualFolderKey = "multilingualModelFolderPath"
     private static let historyKey = "transcriptHistory"
@@ -233,6 +240,7 @@ final class AppModel {
     var canTranscribe: Bool {
         if case .ready = phase {
             switch engineKind {
+            case .frenchSteno: return frenchTranscriber != nil
             case .coreAI: return coreAITranscriber != nil
             case .multilingual: return multilingualTranscriber != nil
             }
@@ -279,6 +287,10 @@ final class AppModel {
     func activateCurrentEngine() async {
         let defaults = UserDefaults.standard
         switch engineKind {
+        case .frenchSteno:
+            let preferred = defaults.string(forKey: Self.frenchFolderKey)
+                .map { URL(fileURLWithPath: $0, isDirectory: true) }
+            await openFrench(FrenchStore.locate(preferred: preferred))
         case .coreAI:
             let preferred = (defaults.string(forKey: "models") ?? defaults.string(forKey: Self.folderKey))
                 .map { URL(fileURLWithPath: $0, isDirectory: true) }
@@ -304,6 +316,29 @@ final class AppModel {
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(1))
             self.refreshAccessibilityStatus()
+        }
+    }
+
+    // MARK: - French Sténo v1 (EmbeddingGemma 2 CTC)
+
+    func openFrench(_ root: URL?) async {
+        guard let root else {
+            phase = .noModel(
+                "Modèle Français Sténo v1 non téléchargé (\(EngineKind.frenchSteno.downloadSizeDescription)). Cliquez sur Télécharger pour l'installer automatiquement."
+            )
+            return
+        }
+        frenchTranscriber = nil
+        phase = .loading("Chargement du lecteur Français Sténo v1…")
+        do {
+            let loaded = try await FrenchTranscriber.load(root: root) { message in
+                Task { @MainActor in self.phase = .loading(message) }
+            }
+            frenchTranscriber = loaded
+            UserDefaults.standard.set(root.path, forKey: Self.frenchFolderKey)
+            phase = .ready
+        } catch {
+            phase = .failed(error.localizedDescription)
         }
     }
 
@@ -380,6 +415,18 @@ final class AppModel {
 
     func download() async {
         switch engineKind {
+        case .frenchSteno:
+            phase = .downloading(0, "Téléchargement du modèle Français Sténo v1 (EmbeddingGemma 2 CTC)…")
+            do {
+                let root = try await FrenchStore.download { fraction, status in
+                    Task { @MainActor in
+                        self.phase = .downloading(fraction, status)
+                    }
+                }
+                await openFrench(root)
+            } catch {
+                phase = .failed(error.localizedDescription)
+            }
         case .coreAI:
             phase = .downloading(0, "Téléchargement de EmbeddingGemma-2-Transcribe-CoreAI…")
             do {
@@ -420,6 +467,40 @@ final class AppModel {
 
         do {
             switch engineKind {
+            case .frenchSteno:
+                guard let transcriber = frenchTranscriber else {
+                    phase = .noModel("Téléchargez d'abord le modèle Français Sténo v1.")
+                    return nil
+                }
+                let result = try await transcriber.transcribe(url) { done, total in
+                    Task { @MainActor in self.phase = .transcribing(window: done, of: total) }
+                }
+                transcript = result.text
+                lastSRT = result.srt
+                stats = RunStats(
+                    file: url.lastPathComponent,
+                    audioSeconds: result.audioSeconds,
+                    totalSeconds: result.totalSeconds,
+                    decodeSeconds: result.decodeSeconds,
+                    logMelSeconds: 0,
+                    windowSeconds: result.modelSeconds + result.postSeconds,
+                    stageSeconds: ["coreml (EG2+CTC)", "décodage mots"],
+                    stageSums: [result.modelSeconds, result.postSeconds],
+                    hostSeconds: 0,
+                    windows: result.windows,
+                    form: "Sténo Français v1 Large (EmbeddingGemma 2 CTC)",
+                    overlap: false
+                )
+                appendHistory(
+                    sourceName: fromDictation ? "Dictée vocale (FR)" : url.lastPathComponent,
+                    engineTitle: "Français Sténo v1",
+                    audioSeconds: result.audioSeconds,
+                    totalSeconds: result.totalSeconds,
+                    text: result.text,
+                    srt: result.srt
+                )
+                phase = .ready
+
             case .coreAI:
                 guard let transcriber = coreAITranscriber else {
                     phase = .noModel("Téléchargez d'abord le modèle Core AI.")
@@ -446,7 +527,7 @@ final class AppModel {
                     overlap: result.run.overlap
                 )
                 appendHistory(
-                    sourceName: fromDictation ? "Dictée vocale" : url.lastPathComponent,
+                    sourceName: fromDictation ? "Dictée vocale (EN)" : url.lastPathComponent,
                     engineTitle: "Core AI EN v2",
                     audioSeconds: result.audioSeconds,
                     totalSeconds: result.totalSeconds,
@@ -573,7 +654,7 @@ final class AppModel {
     }
 
     func dismissError() {
-        if coreAITranscriber != nil || multilingualTranscriber != nil {
+        if frenchTranscriber != nil || coreAITranscriber != nil || multilingualTranscriber != nil {
             phase = .ready
         }
     }
@@ -600,6 +681,7 @@ final class AppModel {
         if panel.runModal() == .OK, let url = panel.url {
             Task {
                 switch engineKind {
+                case .frenchSteno: await openFrench(url)
                 case .coreAI: await openCoreAI(url)
                 case .multilingual: await openMultilingual(url)
                 }

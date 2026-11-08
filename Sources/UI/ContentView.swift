@@ -205,7 +205,14 @@ struct ContentView: View {
                 }
             }
         case .ready, .recording:
-            if model.engineKind == .coreAI, let form = model.form {
+            if model.engineKind == .frenchSteno {
+                Label(
+                    "Lecteur Français Sténo v1 Large prêt (EmbeddingGemma 2 CTC · Majuscules & ponctuation)",
+                    systemImage: "checkmark.circle.fill"
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            } else if model.engineKind == .coreAI, let form = model.form {
                 Label("\(form.title) · overlap \(model.overlap ? "actif" : "inactif")", systemImage: "checkmark.circle.fill")
                     .font(.callout)
                     .foregroundStyle(.secondary)

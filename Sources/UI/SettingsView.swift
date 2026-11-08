@@ -15,7 +15,11 @@ struct SettingsView: View {
                         }
                     }
 
-                    if model.engineKind == .multilingual {
+                    if model.engineKind == .frenchSteno {
+                        Text("Modèle Sténo Français v1 Large sur l'encodeur audio EmbeddingGemma 2 (13 états mixés + lecteur CTC 10 blocs sur 30 002 pièces Gemma). Produit du français ponctué avec majuscules et sous-titres SRT en un seul passage.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    } else if model.engineKind == .multilingual {
                         Picker("Langue cible", selection: $model.multilingualLanguage) {
                             ForEach(MultilingualLanguage.allCases) { lang in
                                 Text(lang.label).tag(lang)
