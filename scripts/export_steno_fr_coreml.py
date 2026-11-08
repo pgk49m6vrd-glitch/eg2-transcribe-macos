@@ -430,8 +430,6 @@ def load_steno(model_key: str = "large"):
         base_model,
         revision=base_rev,
         dtype=torch.float32,
-        vision_config=None,
-        attn_implementation="sdpa",
     )
     tower = HFTower(full.audio_tower.eval())
     del full
