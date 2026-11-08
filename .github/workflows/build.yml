@@ -1,0 +1,84 @@
+name: Build macOS App & DMG
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    name: Build EG2Transcribe.app (macOS 27 / Xcode 27 arm64)
+    runs-on: xcode-27
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify macOS 27 & Xcode 27 toolchain
+        run: |
+          sw_vers
+          uname -m
+          xcodebuild -version
+          swift --version
+
+      - name: Install XcodeGen if needed
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen --version
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build EG2Transcribe.app (Release, arm64)
+        run: |
+          xcodebuild \
+            -project EG2Transcribe.xcodeproj \
+            -scheme EG2TranscribeMac \
+            -configuration Release \
+            -destination "generic/platform=macOS,arch=arm64" \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Package .app into .dmg and .zip
+        run: |
+          chmod +x scripts/package_dmg.sh
+          ./scripts/package_dmg.sh "build/Build/Products/Release/EG2Transcribe.app" dist
+
+      - name: Upload DMG & ZIP Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: EG2Transcribe-macOS-arm64
+          path: |
+            dist/EG2Transcribe-macOS-arm64.dmg
+            dist/EG2Transcribe-macOS-arm64.zip
+            dist/SHA256SUMS.txt
+
+      - name: Publish / Update GitHub Release (on main push)
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [ "$TAG" = "main" ]; then
+            TAG="v1.0.0"
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/EG2Transcribe-macOS-arm64.dmg dist/EG2Transcribe-macOS-arm64.zip dist/SHA256SUMS.txt --clobber
+          else
+            gh release create "$TAG" \
+              dist/EG2Transcribe-macOS-arm64.dmg \
+              dist/EG2Transcribe-macOS-arm64.zip \
+              dist/SHA256SUMS.txt \
+              --title "EG2 Transcribe $TAG (macOS Apple Silicon)" \
+              --notes "Application macOS prête à l'emploi (.dmg et .zip) basée sur **Google EmbeddingGemma 2** + **CTC Reader** (Core AI Anglais v2 200k mots & Multilingue zh/en/ja/ko v4).\n\n### Installation (sans compte développeur Apple payant)\n1. Ouvrez \`EG2Transcribe-macOS-arm64.dmg\` et glissez \`EG2Transcribe.app\` dans \`/Applications\`.\n2. Faites **Clic droit > Ouvrir** sur \`EG2Transcribe.app\` (ou exécutez \`xattr -cr /Applications/EG2Transcribe.app\`)."
+          fi
