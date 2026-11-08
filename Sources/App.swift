@@ -18,7 +18,7 @@ struct EG2TranscribeApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        Window("EG2 Transcribe Studio", id: "studio") {
+        SwiftUI.Window("EG2 Transcribe Studio", id: "studio") {
             ContentView(model: model)
         }
         .defaultSize(width: 720, height: 580)

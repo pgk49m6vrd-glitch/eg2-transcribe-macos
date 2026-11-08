@@ -223,8 +223,8 @@ final class MultilingualTranscriber: @unchecked Sendable {
         langArray.dataPointer.assumingMemoryBound(to: Int32.self)[0] = langCode
 
         let provider = try MLDictionaryFeatureProvider(dictionary: [
-            "audio": MLFeatureValue(multiArrayValue: audioArray),
-            "lang": MLFeatureValue(multiArrayValue: langArray),
+            "audio": MLFeatureValue(multiArray: audioArray),
+            "lang": MLFeatureValue(multiArray: langArray),
         ])
 
         lock.lock()

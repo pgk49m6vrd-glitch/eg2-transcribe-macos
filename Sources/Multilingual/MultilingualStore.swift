@@ -77,14 +77,16 @@ enum MultilingualStore {
             let tempDestination = root.appending(path: asset.filename + ".part")
             try? fm.removeItem(at: tempDestination)
 
-            progress(Double(completedBytes) / Double(totalBytes), "Téléchargement de \(asset.filename)…")
+            let baseBytes = completedBytes
+            let assetName = asset.filename
+            progress(Double(baseBytes) / Double(totalBytes), "Téléchargement de \(assetName)…")
             try await downloadFile(
                 from: url,
                 to: tempDestination,
                 expectedBytes: asset.expectedBytes
             ) { fileBytes in
-                let fraction = Double(completedBytes + fileBytes) / Double(totalBytes)
-                progress(min(0.98, fraction), "Téléchargement de \(asset.filename)…")
+                let fraction = Double(baseBytes + fileBytes) / Double(totalBytes)
+                progress(min(0.98, fraction), "Téléchargement de \(assetName)…")
             }
 
             try? fm.removeItem(at: destination)
