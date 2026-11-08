@@ -42,7 +42,7 @@ jobs:
             -project EG2Transcribe.xcodeproj \
             -scheme EG2TranscribeMac \
             -configuration Release \
-            -destination "generic/platform=macOS,arch=arm64" \
+            -destination "platform=macOS,arch=arm64" \
             -derivedDataPath build \
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO \
