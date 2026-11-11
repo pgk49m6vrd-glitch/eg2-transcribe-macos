@@ -16,7 +16,9 @@ struct SettingsView: View {
                     }
 
                     if model.engineKind == .frenchSteno {
-                        Text("Modèle Sténo Français v1 Large sur l'encodeur audio EmbeddingGemma 2 (13 états mixés + lecteur CTC 10 blocs sur 30 002 pièces Gemma). Produit du français ponctué avec majuscules et sous-titres SRT en un seul passage.")
+                        Toggle("Recherche en faisceau 4-Gramme (Beam Search)", isOn: $model.useBeamSearch)
+                        Toggle("Convertir les nombres dictés en chiffres (ITN)", isOn: $model.useFrenchITN)
+                        Text("Modèle Sténo Français v1 Large sur l'encodeur audio EmbeddingGemma 2 + modèle de langue 4-gramme (lm_fr.bin, mmap 0 Mo RAM) pour désambiguïser les homophones (a/à, c'est/s'est, ou/où, -é/-er) et passe ITN déterministe en Swift pur (« ticket quatre cent douze » → « ticket 412 », 0 % hallucination).")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     } else if model.engineKind == .multilingual {

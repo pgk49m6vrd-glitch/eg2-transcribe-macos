@@ -14,7 +14,7 @@ enum EngineKind: String, CaseIterable, Identifiable, Sendable {
     var title: String {
         switch self {
         case .frenchSteno:
-            "Français — Sténo v1 (EmbeddingGemma 2 CTC · Ponctué)"
+            "Français — Sténo v1 (EmbeddingGemma 2 CTC + 4-Gram LM + ITN)"
         case .coreAI:
             "Anglais Ultra-Rapide (Core AI Reader v2 · 200k mots)"
         case .multilingual:
@@ -32,7 +32,7 @@ enum EngineKind: String, CaseIterable, Identifiable, Sendable {
 
     var downloadSizeDescription: String {
         switch self {
-        case .frenchSteno: "~365 Mo (Sténo v1 Large · EmbeddingGemma 2 CTC Français)"
+        case .frenchSteno: "~245 Mo (Sténo v1 Large Core ML + 4-Gramme Français lm_fr.bin)"
         case .coreAI: "~933 Mo (Hugging Face: mlboydaisuke/EmbeddingGemma-2-Transcribe-CoreAI)"
         case .multilingual: "~318 Mo (GitHub Release: TimHu950112/eg2-transcribe-zh-en-ja-ko v4.0)"
         }
@@ -146,6 +146,15 @@ final class AppModel {
     }() {
         didSet {
             UserDefaults.standard.set(useBeamSearch, forKey: "useBeamSearch")
+        }
+    }
+
+    var useFrenchITN: Bool = {
+        if UserDefaults.standard.object(forKey: "useFrenchITN") == nil { return true }
+        return UserDefaults.standard.bool(forKey: "useFrenchITN")
+    }() {
+        didSet {
+            UserDefaults.standard.set(useFrenchITN, forKey: "useFrenchITN")
         }
     }
 
@@ -472,11 +481,17 @@ final class AppModel {
                     phase = .noModel("Téléchargez d'abord le modèle Français Sténo v1.")
                     return nil
                 }
-                let result = try await transcriber.transcribe(url) { done, total in
+                let result = try await transcriber.transcribe(
+                    url,
+                    useBeamSearch: useBeamSearch,
+                    useITN: useFrenchITN
+                ) { done, total in
                     Task { @MainActor in self.phase = .transcribing(window: done, of: total) }
                 }
                 transcript = result.text
                 lastSRT = result.srt
+                let decodeLabel = result.usedBeamSearch ? "4-Gram Beam" : "Greedy"
+                let itnSuffix = result.usedITN ? " + ITN" : ""
                 stats = RunStats(
                     file: url.lastPathComponent,
                     audioSeconds: result.audioSeconds,
@@ -484,16 +499,16 @@ final class AppModel {
                     decodeSeconds: result.decodeSeconds,
                     logMelSeconds: 0,
                     windowSeconds: result.modelSeconds + result.postSeconds,
-                    stageSeconds: ["coreml (EG2+CTC)", "décodage mots"],
+                    stageSeconds: ["coreml (EG2+CTC)", "\(decodeLabel)\(itnSuffix)"],
                     stageSums: [result.modelSeconds, result.postSeconds],
                     hostSeconds: 0,
                     windows: result.windows,
-                    form: "Sténo Français v1 Large (EmbeddingGemma 2 CTC)",
+                    form: "Sténo Français v1 Large (\(decodeLabel)\(itnSuffix))",
                     overlap: false
                 )
                 appendHistory(
                     sourceName: fromDictation ? "Dictée vocale (FR)" : url.lastPathComponent,
-                    engineTitle: "Français Sténo v1",
+                    engineTitle: "Français Sténo v1 (\(decodeLabel))",
                     audioSeconds: result.audioSeconds,
                     totalSeconds: result.totalSeconds,
                     text: result.text,

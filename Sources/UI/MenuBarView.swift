@@ -111,7 +111,17 @@ struct MenuBarView: View {
                 .disabled(model.isBusy || model.isRecording)
             }
 
-            if model.engineKind == .multilingual {
+            if model.engineKind == .frenchSteno {
+                HStack(spacing: 12) {
+                    Toggle("4-Gram Beam", isOn: $model.useBeamSearch)
+                        .font(.caption2)
+                        .toggleStyle(.checkbox)
+                    Toggle("Nombres → Chiffres (ITN)", isOn: $model.useFrenchITN)
+                        .font(.caption2)
+                        .toggleStyle(.checkbox)
+                    Spacer()
+                }
+            } else if model.engineKind == .multilingual {
                 HStack {
                     Text("Langue")
                         .font(.caption.weight(.medium))

@@ -1,7 +1,7 @@
 import Foundation
 
-/// Locates and downloads the French EmbeddingGemma 2 + CTC Reader (`StenoFr.mlpackage` + `steno_fr_meta.json`),
-/// exported from `guigssss/steno-fr-v1-large` (Apache-2.0, 30,002 French word pieces with capitalization and punctuation).
+/// Locates and downloads the French EmbeddingGemma 2 + CTC Reader (`StenoFr.mlpackage` + `steno_fr_meta.json`)
+/// and its memory-mapped 4-gram French language model (`lm_fr.bin`).
 enum FrenchStore {
     static let releaseBaseURL = URL(string: "https://github.com/pgk49m6vrd-glitch/eg2-transcribe-macos/releases/latest/download")!
 
@@ -21,17 +21,23 @@ enum FrenchStore {
 
     static let metaAsset = AssetSpec(
         filename: "steno_fr_meta.json",
-        expectedBytes: 310_000,
+        expectedBytes: 302_116,
         minValidBytes: 100_000
+    )
+
+    static let lmAsset = AssetSpec(
+        filename: "lm_fr.bin",
+        expectedBytes: 48_000_000,
+        minValidBytes: 5_000_000
     )
 
     static let mlpackageZip = AssetSpec(
         filename: "StenoFr.mlpackage.zip",
-        expectedBytes: 365_000_000,
+        expectedBytes: 205_984_851,
         minValidBytes: 100_000_000
     )
 
-    /// Returns the first directory that holds a complete French Sténo model installation.
+    /// Returns the first directory that holds a complete French Sténo + 4-Gram LM installation.
     static func locate(preferred: URL? = nil) -> URL? {
         let candidates = [preferred, localFolder, downloadedFolder].compactMap { $0 }
         return candidates.first { isComplete($0) }
@@ -42,10 +48,14 @@ enum FrenchStore {
         let hasModel = fm.fileExists(atPath: root.appending(path: "StenoFr.mlmodelc").path)
             || fm.fileExists(atPath: root.appending(path: "StenoFr.mlpackage/Manifest.json").path)
         guard hasModel else { return false }
-        let metaPath = root.appending(path: metaAsset.filename).path
-        guard fm.fileExists(atPath: metaPath) else { return false }
-        let metaSize = (try? fm.attributesOfItem(atPath: metaPath)[.size] as? Int64) ?? 0
-        return metaSize >= metaAsset.minValidBytes
+
+        for asset in [metaAsset, lmAsset] {
+            let path = root.appending(path: asset.filename).path
+            guard fm.fileExists(atPath: path) else { return false }
+            let size = (try? fm.attributesOfItem(atPath: path)[.size] as? Int64) ?? 0
+            if size < asset.minValidBytes { return false }
+        }
+        return true
     }
 
     /// Downloads any missing files into `downloadedFolder` and unpacks `StenoFr.mlpackage.zip`.
@@ -58,10 +68,12 @@ enum FrenchStore {
             && !fm.fileExists(atPath: root.appending(path: "StenoFr.mlpackage/Manifest.json").path)
 
         var queue: [AssetSpec] = []
-        let metaTarget = root.appending(path: metaAsset.filename)
-        let metaSize = (try? fm.attributesOfItem(atPath: metaTarget.path)[.size] as? Int64) ?? 0
-        if metaSize < metaAsset.minValidBytes {
-            queue.append(metaAsset)
+        for asset in [metaAsset, lmAsset] {
+            let target = root.appending(path: asset.filename)
+            let size = (try? fm.attributesOfItem(atPath: target.path)[.size] as? Int64) ?? 0
+            if size < asset.minValidBytes {
+                queue.append(asset)
+            }
         }
         if needModel {
             queue.append(mlpackageZip)
@@ -85,7 +97,7 @@ enum FrenchStore {
                 expectedBytes: asset.expectedBytes
             ) { fileBytes in
                 let fraction = Double(baseBytes + fileBytes) / Double(totalBytes)
-                progress(min(0.98, fraction), "Téléchargement Français Sténo v1 (\(Int(min(0.98, fraction) * 100))%)…")
+                progress(min(0.98, fraction), "Téléchargement Français Sténo + 4-Gram (\(Int(min(0.98, fraction) * 100))%)…")
             }
 
             try? fm.removeItem(at: destination)
@@ -99,7 +111,7 @@ enum FrenchStore {
             }
         }
 
-        progress(1.0, "Modèle Français Sténo v1 prêt")
+        progress(1.0, "Modèle Français Sténo + 4-Gram prêt")
         return root
     }
 

@@ -54,23 +54,26 @@ jobs:
           chmod +x scripts/package_dmg.sh
           ./scripts/package_dmg.sh "build/Build/Products/Release/EG2Transcribe.app" dist
 
-      - name: Set up Python 3.12 for Sténo French Core ML export
+      - name: Set up Python 3.12 for French 4-Gram LM & Sténo Core ML
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: "pip"
 
-      - name: Export & Verify French Sténo v1 Large (EmbeddingGemma 2 CTC -> StenoFr.mlpackage)
+      - name: Prepare StenoFr.mlpackage & Build French 4-Gram LM (lm_fr.bin)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${GITHUB_REF_NAME}"
           if [ "$TAG" = "main" ]; then
-            TAG="v1.1.0"
+            TAG="v1.2.0"
           fi
           if gh release view "$TAG" --json assets --jq '.assets[].name' 2>/dev/null | grep -q "^StenoFr.mlpackage.zip$"; then
-            echo "StenoFr.mlpackage.zip already published on $TAG; downloading existing assets..."
+            echo "Downloading StenoFr.mlpackage.zip and steno_fr_meta.json from $TAG..."
             gh release download "$TAG" -p "StenoFr.mlpackage.zip" -p "steno_fr_meta.json" -D dist --clobber
+          elif gh release view "v1.1.0" --json assets --jq '.assets[].name' 2>/dev/null | grep -q "^StenoFr.mlpackage.zip$"; then
+            echo "Reusing verified StenoFr.mlpackage.zip and steno_fr_meta.json from v1.1.0..."
+            gh release download "v1.1.0" -p "StenoFr.mlpackage.zip" -p "steno_fr_meta.json" -D dist --clobber
           else
             pip install --upgrade pip
             pip install "torch>=2.14" "transformers>=5.19" "coremltools>=9.0" "huggingface_hub>=1.0" "safetensors>=0.8" "numpy>=1.26"
@@ -79,7 +82,17 @@ jobs:
             /usr/bin/ditto -c -k --keepParent dist/steno_fr/StenoFr.mlpackage dist/StenoFr.mlpackage.zip
             rm -rf dist/steno_fr
           fi
-          (cd dist && shasum -a 256 EG2Transcribe-macOS-arm64.dmg EG2Transcribe-macOS-arm64.zip StenoFr.mlpackage.zip steno_fr_meta.json > SHA256SUMS.txt)
+
+          if gh release view "$TAG" --json assets --jq '.assets[].name' 2>/dev/null | grep -q "^lm_fr.bin$"; then
+            echo "Downloading existing lm_fr.bin from $TAG..."
+            gh release download "$TAG" -p "lm_fr.bin" -D dist --clobber
+          else
+            pip install --upgrade pip
+            pip install "numpy>=1.26" "pyarrow>=15.0" "huggingface_hub>=1.0"
+            python scripts/build_fr_lm.py --out dist/lm_fr.bin
+          fi
+
+          (cd dist && shasum -a 256 EG2Transcribe-macOS-arm64.dmg EG2Transcribe-macOS-arm64.zip StenoFr.mlpackage.zip steno_fr_meta.json lm_fr.bin > SHA256SUMS.txt)
           cat dist/SHA256SUMS.txt
 
       - name: Upload DMG & ZIP Artifacts
@@ -90,6 +103,7 @@ jobs:
             dist/EG2Transcribe-macOS-arm64.dmg
             dist/EG2Transcribe-macOS-arm64.zip
             dist/steno_fr_meta.json
+            dist/lm_fr.bin
             dist/SHA256SUMS.txt
 
       - name: Publish / Update GitHub Release (on main push)
@@ -99,7 +113,7 @@ jobs:
         run: |
           TAG="${GITHUB_REF_NAME}"
           if [ "$TAG" = "main" ]; then
-            TAG="v1.1.0"
+            TAG="v1.2.0"
           fi
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" \
@@ -107,6 +121,7 @@ jobs:
               dist/EG2Transcribe-macOS-arm64.zip \
               dist/StenoFr.mlpackage.zip \
               dist/steno_fr_meta.json \
+              dist/lm_fr.bin \
               dist/SHA256SUMS.txt \
               --clobber
           else
@@ -115,8 +130,9 @@ jobs:
               dist/EG2Transcribe-macOS-arm64.zip \
               dist/StenoFr.mlpackage.zip \
               dist/steno_fr_meta.json \
+              dist/lm_fr.bin \
               dist/SHA256SUMS.txt \
               --latest \
-              --title "EG2 Transcribe $TAG — Français Sténo + Anglais Core AI + Multilingue (macOS Apple Silicon)" \
-              --notes "Application macOS prête à l'emploi (\`.dmg\` et \`.zip\`) basée sur **Google EmbeddingGemma 2** + **CTC Reader** :\n- 🇫🇷 **Français — Sténo v1 Large (\`guigssss/steno-fr-v1-large\`)** : lecteur CTC 10 blocs sur les 13 états de l'encodeur audio EmbeddingGemma 2 (30 002 pièces de mots Gemma avec majuscules et ponctuation, WER 8,8 % MLS FR / 9,7 % FLEURS FR).\n- 🇬🇧 **Anglais Ultra-Rapide — Core AI Reader v2 (\`mlboydaisuke/EmbeddingGemma-2-Transcribe-CoreAI\`)** : 200 000 mots anglais dans l'espace 768-d.\n- 🌐 **Multilingue zh / en / ja / ko v4 (\`TimHu950112/eg2-transcribe-zh-en-ja-ko\`)** : Core ML + N-Gram LM.\n\n### Installation (sans compte développeur Apple payant)\n1. Ouvrez \`EG2Transcribe-macOS-arm64.dmg\` et glissez \`EG2Transcribe.app\` dans \`/Applications\`.\n2. Faites **Clic droit > Ouvrir** sur \`EG2Transcribe.app\` (ou exécutez \`xattr -cr /Applications/EG2Transcribe.app\`)."
+              --title "EG2 Transcribe $TAG — Français Sténo (4-Gram Beam Search + ITN) + Anglais Core AI + Multilingue" \
+              --notes "Application macOS prête à l'emploi (\`.dmg\` et \`.zip\`) basée sur **Google EmbeddingGemma 2** + **CTC Reader** :\n- 🇫🇷 **Français — Sténo v1 Large + 4-Gram Beam Search (\`lm_fr.bin\`) + ITN Déterministe** :\n  - **Décodeur CTC Prefix Beam Search + Modèle de langue 4-Gramme Français (\`lm_fr.bin\`, ~48 Mo mappé en mémoire via \`mmap\`, 0 Mo RAM)** : exploite les Top-8 candidats par trame de 40 ms de \`StenoFr.mlpackage\` avec lissage Kneser-Ney interpolé pour désambiguïser les homophones grammaticaux (\`a/à\`, \`c'est/s'est\`, \`ou/où\`, \`on/ont\`, \`-é/-er/-ez\`) en < 2 ms sans altérer le franglais ni les termes techniques.\n  - **ITN Français Déterministe en Swift pur (\`FrenchITN\`)** : convertit instantanément (< 0,1 ms, 0 Mo RAM, 0 % hallucination) les nombres parlés en chiffres (\`« ticket quatre cent douze »\` → \`« ticket 412 »\`, \`« version un point deux »\` → \`« version 1.2 »\`, \`« quatre-vingt-dix pour cent »\` → \`« 90 % »\`) tout en protégeant l'article indéfini \`un/une\`.\n- 🇬🇧 **Anglais Ultra-Rapide — Core AI Reader v2 (\`mlboydaisuke/EmbeddingGemma-2-Transcribe-CoreAI\`)** : 200 000 mots anglais dans l'espace 768-d.\n- 🌐 **Multilingue zh / en / ja / ko v4 (\`TimHu950112/eg2-transcribe-zh-en-ja-ko\`)** : Core ML + N-Gram LM.\n\n### Installation (sans compte développeur Apple payant)\n1. Ouvrez \`EG2Transcribe-macOS-arm64.dmg\` et glissez \`EG2Transcribe.app\` dans \`/Applications\`.\n2. Faites **Clic droit > Ouvrir** sur \`EG2Transcribe.app\` (ou exécutez \`xattr -cr /Applications/EG2Transcribe.app\`)."
           fi

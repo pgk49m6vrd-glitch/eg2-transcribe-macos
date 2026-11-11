@@ -207,7 +207,7 @@ struct ContentView: View {
         case .ready, .recording:
             if model.engineKind == .frenchSteno {
                 Label(
-                    "Lecteur Français Sténo v1 Large prêt (EmbeddingGemma 2 CTC · Majuscules & ponctuation)",
+                    "Lecteur Français Sténo v1 Large prêt (\(model.useBeamSearch ? "4-Gram Beam Search" : "Greedy")\(model.useFrenchITN ? " + ITN Chiffres" : ""))",
                     systemImage: "checkmark.circle.fill"
                 )
                 .font(.callout)
