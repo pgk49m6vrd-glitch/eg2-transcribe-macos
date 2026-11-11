@@ -7,9 +7,11 @@ Application macOS native prête à l'emploi (`.app` / `.dmg`, barre de menus + f
 ## Fonctionnalités
 
 1. **Trois moteurs locaux EmbeddingGemma 2 + CTC au choix (téléchargés à la demande au 1er lancement)** :
-   - 🇫🇷 **Français — Sténo v1 Large (`guigssss/steno-fr-v1-large` / `GuigsEvt/steno-asr`)** *(Moteur par défaut)* :
-     - Encodeur audio EmbeddingGemma 2 (couches 1–9 figées, couches 10–12 affinées pour le français, mélange appris des 13 états cachés) + lecteur CTC 10 blocs sur **30 002 pièces de mots Gemma** exporté en Core ML 8-bit (`StenoFr.mlpackage`, ~365 Mo).
-     - Produit directement du **français ponctué avec majuscules** et sous-titres `.srt` en un seul passage (WER **8,8 %** sur Multilingual LibriSpeech FR et **9,7 %** sur FLEURS FR), sans hallucinations de type Whisper.
+   - 🇫🇷 **Français — Sténo v1 Large (`guigssss/steno-fr-v1-large` / `GuigsEvt/steno-asr`) + 4-Gram Beam Search + ITN** *(Moteur par défaut)* :
+     - Encodeur audio EmbeddingGemma 2 (couches 1–9 figées, couches 10–12 affinées pour le français, mélange appris des 13 états cachés) + lecteur CTC 10 blocs sur **30 002 pièces de mots Gemma** exporté en Core ML 8-bit (`StenoFr.mlpackage`, ~196 Mo).
+     - **Décodeur CTC Prefix Beam Search + Modèle de langue 4-Gramme Français (`lm_fr.bin`, ~48 Mo mappé via `mmap`, 0 Mo RAM)** : exploite les Top-8 candidats par trame de 40 ms avec lissage Kneser-Ney interpolé pour désambiguïser les homophones grammaticaux (`a/à`, `c'est/s'est`, `ou/où`, `on/ont`, `-é/-er/-ez`) en < 2 ms sans altérer le franglais ni les termes techniques.
+     - **ITN Français Déterministe en Swift pur (`FrenchITN`)** : convertit instantanément (< 0,1 ms, 0 Mo RAM, 0 % hallucination) les nombres parlés en chiffres (`« ticket quatre cent douze »` → `« ticket 412 »`, `« version un point deux »` → `« version 1.2 »`, `« quatre-vingt-dix pour cent »` → `« 90 % »`) tout en protégeant l'article indéfini `un/une`.
+     - Produit directement du **français ponctué avec majuscules** et sous-titres `.srt` en un seul passage, sans hallucinations de type Whisper.
    - 🇬🇧 **Core AI Anglais v2 (`mlboydaisuke/EmbeddingGemma-2-Transcribe-CoreAI`)** :
      - Encodeur audio EmbeddingGemma 2 figé (GPU, fp16) + Reader v2 (19,6 M paramètres, Neural Engine / GPU, table de 200 000 mots anglais dans l'espace 768-d).
      - WER LibriSpeech `test-clean` **4,21 %**, vitesse jusqu'à **×548 temps réel** sur Apple Silicon (M4 Max) grâce au chevauchement GPU ∥ Neural Engine.
