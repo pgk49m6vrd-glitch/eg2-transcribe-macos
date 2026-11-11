@@ -238,6 +238,10 @@ final class NGramLM: @unchecked Sendable {
         }
     }
 
+    func containsUnigram(_ symbol: String) -> Bool {
+        find([symbol][...]) != nil
+    }
+
     func logp(history: [String], symbol: String) -> Float {
         var h = Array(history.suffix(order - 1))
         if h.count < order - 1 {

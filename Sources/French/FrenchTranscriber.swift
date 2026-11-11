@@ -280,8 +280,14 @@ final class FrenchTranscriber: @unchecked Sendable {
         return normalized
     }
 
-    /// Scores a completed word against the 4-gram LM, handling both direct vocabulary hits
-    /// and hyphenated compounds (e.g. "soixante-trois", "quatre-vingt-dix", "peut-être").
+    private static let cliticExpansions: [String: String] = [
+        "j": "je", "l": "le", "d": "de", "n": "ne", "s": "se",
+        "c": "ce", "m": "me", "t": "te", "qu": "que",
+        "jusqu": "jusque", "lorsqu": "lorsque", "puisqu": "puisque"
+    ]
+
+    /// Scores a completed word against the 4-gram LM, handling direct vocabulary hits,
+    /// hyphenated compounds ("soixante-trois", "peut-être"), and elided clitic contractions ("j'habite", "l'application").
     private static func scoreCompletedWord(
         rawWord: String,
         history: [String],
@@ -300,6 +306,32 @@ final class FrenchTranscriber: @unchecked Sendable {
         let directLP = lm.logp(history: history, symbol: clean)
         var bestLP = directLP
         var nextHistory = history
+        var appendedHistory = false
+
+        if clean.contains("'"), !lm.containsUnigram(clean) {
+            let parts = clean.split(separator: "'", maxSplits: 1, omittingEmptySubsequences: true).map(String.init)
+            if parts.count == 2 {
+                let clitic = cliticExpansions[parts[0]] ?? parts[0]
+                let stem = parts[1]
+                let lp1 = lm.logp(history: history, symbol: clitic)
+                var h2 = history
+                h2.append(clitic)
+                if h2.count > maxHist {
+                    h2.removeFirst(h2.count - maxHist)
+                }
+                let lp2 = lm.logp(history: h2, symbol: stem)
+                let avgLP = 0.5 * (lp1 + lp2)
+                if avgLP > bestLP {
+                    bestLP = avgLP
+                    h2.append(stem)
+                    if h2.count > maxHist {
+                        h2.removeFirst(h2.count - maxHist)
+                    }
+                    nextHistory = h2
+                    appendedHistory = true
+                }
+            }
+        }
 
         if clean.contains("-") {
             let subParts = clean.split(separator: "-", omittingEmptySubsequences: true).map(String.init)
@@ -320,9 +352,11 @@ final class FrenchTranscriber: @unchecked Sendable {
             }
         }
 
-        nextHistory.append(clean)
-        if nextHistory.count > maxHist {
-            nextHistory.removeFirst(nextHistory.count - maxHist)
+        if !appendedHistory {
+            nextHistory.append(clean)
+            if nextHistory.count > maxHist {
+                nextHistory.removeFirst(nextHistory.count - maxHist)
+            }
         }
 
         // Slight penalty if the acoustic path dropped the hyphen in a compound number ("soixantetrois")

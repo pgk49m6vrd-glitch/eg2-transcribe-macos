@@ -206,7 +206,7 @@ def thresholds(counts: dict[int, np.ndarray], order: int, budget: int) -> tuple[
     share = max(1, (budget - len(counts[1])) // (order - 1))
     for k in range(2, order + 1):
         c = np.sort(counts[k])[::-1]
-        t = int(c[share]) + 1 if len(c) > share else 1
+        t = (int(c[share]) if k == 2 else int(c[share]) + 1) if len(c) > share else 1
         out.append(max(t, 2 if k >= 3 else 1))
     return tuple(out)
 
@@ -302,14 +302,32 @@ class VerifyBackoffLM:
                     bo += float(self.b[j])
         return bo + self.unk
 
+    CLITIC_EXPANSIONS = {
+        "j": "je", "l": "le", "d": "de", "n": "ne", "s": "se",
+        "c": "ce", "m": "me", "t": "te", "qu": "que",
+        "jusqu": "jusque", "lorsqu": "lorsque", "puisqu": "puisque",
+    }
+
     def sentence_score(self, words: list[str]) -> float:
         hist: list[str] = []
         total = 0.0
         for w in words:
             cw = clean_word(w)
-            if cw:
-                total += self.logp(hist, cw)
-                hist.append(cw)
+            if not cw:
+                continue
+            if "'" in cw and self._find((cw,)) < 0:
+                parts = cw.split("'", 1)
+                if len(parts) == 2 and parts[0] and parts[1]:
+                    clitic = self.CLITIC_EXPANSIONS.get(parts[0], parts[0])
+                    stem = parts[1]
+                    lp1 = self.logp(hist, clitic)
+                    hist.append(clitic)
+                    lp2 = self.logp(hist, stem)
+                    hist.append(stem)
+                    total += 0.5 * (lp1 + lp2)
+                    continue
+            total += self.logp(hist, cw)
+            hist.append(cw)
         return total
 
 
