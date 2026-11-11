@@ -94,9 +94,10 @@ final class FrenchTranscriber: @unchecked Sendable {
         config.computeUnits = .cpuAndGPU
         let mlModel = try await MLModel.load(contentsOf: modelURL, configuration: config)
 
-        status("Chargement du modèle de langue 4-Gram Français (lm_fr.bin · mmap)…")
-        let lmURL = root.appending(path: "lm_fr.bin")
-        let loadedLM = NGramLM(file: lmURL)
+        status("Chargement du modèle de langue 4-Gram Français (lm_fr_v2.bin · mmap)…")
+        let lmV2URL = root.appending(path: "lm_fr_v2.bin")
+        let lmV1URL = root.appending(path: "lm_fr.bin")
+        let loadedLM = NGramLM(file: lmV2URL) ?? NGramLM(file: lmV1URL)
 
         return FrenchTranscriber(root: root, meta: meta, model: mlModel, lm: loadedLM)
     }
@@ -279,6 +280,58 @@ final class FrenchTranscriber: @unchecked Sendable {
         return normalized
     }
 
+    /// Scores a completed word against the 4-gram LM, handling both direct vocabulary hits
+    /// and hyphenated compounds (e.g. "soixante-trois", "quatre-vingt-dix", "peut-être").
+    private static func scoreCompletedWord(
+        rawWord: String,
+        history: [String],
+        lm: NGramLM,
+        alpha: Float,
+        beta: Float,
+        maxHist: Int
+    ) -> (scoreDelta: Float, updatedHistory: [String]) {
+        let canonicalRaw = FrenchITN.canonicalizeGluedNumberWord(rawWord)
+        let wasGluedWithoutHyphen = (canonicalRaw != rawWord)
+        let clean = cleanWordForLM(canonicalRaw)
+        guard !clean.isEmpty else {
+            return (0.0, history)
+        }
+
+        let directLP = lm.logp(history: history, symbol: clean)
+        var bestLP = directLP
+        var nextHistory = history
+
+        if clean.contains("-") {
+            let subParts = clean.split(separator: "-", omittingEmptySubsequences: true).map(String.init)
+            if subParts.count >= 2 {
+                var tempHist = history
+                var sumLP: Float = 0
+                for part in subParts {
+                    sumLP += lm.logp(history: tempHist, symbol: part)
+                    tempHist.append(part)
+                    if tempHist.count > maxHist {
+                        tempHist.removeFirst(tempHist.count - maxHist)
+                    }
+                }
+                let avgLP = sumLP / Float(subParts.count)
+                if avgLP > bestLP {
+                    bestLP = avgLP
+                }
+            }
+        }
+
+        nextHistory.append(clean)
+        if nextHistory.count > maxHist {
+            nextHistory.removeFirst(nextHistory.count - maxHist)
+        }
+
+        // Slight penalty if the acoustic path dropped the hyphen in a compound number ("soixantetrois")
+        // so that the explicit hyphen path ("soixante-trois") wins when both are in the beam.
+        let gluePenalty: Float = wasGluedWithoutHyphen ? -0.6 : 0.0
+        let delta = alpha * bestLP * ln10 + beta + gluePenalty
+        return (delta, nextHistory)
+    }
+
     private struct BeamHypothesis {
         let pieceKey: UInt64
         let lastUnit: Int
@@ -291,22 +344,37 @@ final class FrenchTranscriber: @unchecked Sendable {
         var curPeaks: [Double]
         let history: [String]
         let committedLMScore: Float
-        let lookaheadLMScore: Float
 
         var totalScore: Float {
-            FrenchTranscriber.logSumExp(pBlank, pNonBlank) + committedLMScore + lookaheadLMScore
+            FrenchTranscriber.logSumExp(pBlank, pNonBlank) + committedLMScore
+        }
+
+        func finalScore(lm: NGramLM, alpha: Float, beta: Float, maxHist: Int) -> Float {
+            guard let w = curWord, !w.isEmpty else {
+                return totalScore
+            }
+            let (delta, _) = FrenchTranscriber.scoreCompletedWord(
+                rawWord: w,
+                history: history,
+                lm: lm,
+                alpha: alpha,
+                beta: beta,
+                maxHist: maxHist
+            )
+            return totalScore + delta
         }
 
         func flushAll(offsetSeconds: Double, frameSeconds: Double) -> [WordTiming] {
             var result = completedWords
             if let w = curWord, !w.isEmpty, !curPeaks.isEmpty {
+                let canonicalWord = FrenchITN.canonicalizeGluedNumberWord(w)
                 let logSum = curPeaks.reduce(0.0) { $0 + log(max($1, 1e-6)) }
                 let conf = exp(logSum / Double(curPeaks.count))
                 let startSec = (offsetSeconds + Double(curStart) * frameSeconds * 1000.0).rounded() / 1000.0
                 let endSec = (offsetSeconds + Double(curEnd + 1) * frameSeconds * 1000.0).rounded() / 1000.0
                 result.append(
                     WordTiming(
-                        word: w,
+                        word: canonicalWord,
                         start: startSec,
                         end: endSec,
                         confidence: (conf * 1000.0).rounded() / 1000.0
@@ -324,7 +392,7 @@ final class FrenchTranscriber: @unchecked Sendable {
         offsetSeconds: Double,
         lm: NGramLM,
         alpha: Float = 0.4,
-        beta: Float = 1.6,
+        beta: Float = 1.4,
         beamWidth: Int = 16,
         prune: Float = -10.0
     ) -> [WordTiming] {
@@ -347,8 +415,7 @@ final class FrenchTranscriber: @unchecked Sendable {
             curEnd: 0,
             curPeaks: [],
             history: [],
-            committedLMScore: 0.0,
-            lookaheadLMScore: 0.0
+            committedLMScore: 0.0
         )
 
         var beams: [UInt64: BeamHypothesis] = [rootKey: root]
@@ -371,33 +438,32 @@ final class FrenchTranscriber: @unchecked Sendable {
                 var newCommittedLM = state.committedLMScore
 
                 if let prevWord = state.curWord, !prevWord.isEmpty, !state.curPeaks.isEmpty {
+                    let canonicalPrev = FrenchITN.canonicalizeGluedNumberWord(prevWord)
                     let logSum = state.curPeaks.reduce(0.0) { $0 + log(max($1, 1e-6)) }
                     let conf = exp(logSum / Double(state.curPeaks.count))
                     let startSec = (offsetSeconds + Double(state.curStart) * frameSec * 1000.0).rounded() / 1000.0
                     let endSec = (offsetSeconds + Double(state.curEnd + 1) * frameSec * 1000.0).rounded() / 1000.0
                     newCompleted.append(
                         WordTiming(
-                            word: prevWord,
+                            word: canonicalPrev,
                             start: startSec,
                             end: endSec,
                             confidence: (conf * 1000.0).rounded() / 1000.0
                         )
                     )
-                    newCommittedLM += state.lookaheadLMScore
-                    let prevClean = Self.cleanWordForLM(prevWord)
-                    if !prevClean.isEmpty {
-                        newHistory.append(prevClean)
-                        if newHistory.count > maxHist {
-                            newHistory.removeFirst(newHistory.count - maxHist)
-                        }
-                    }
+                    let (delta, updatedHist) = Self.scoreCompletedWord(
+                        rawWord: prevWord,
+                        history: newHistory,
+                        lm: lm,
+                        alpha: alpha,
+                        beta: beta,
+                        maxHist: maxHist
+                    )
+                    newCommittedLM += delta
+                    newHistory = updatedHist
                 }
 
                 let stripped = String(piece.drop { $0 == "▁" })
-                let newClean = Self.cleanWordForLM(stripped)
-                let newLookahead: Float = newClean.isEmpty
-                    ? 0.0
-                    : (alpha * lm.logp(history: newHistory, symbol: newClean) * Self.ln10 + beta)
 
                 return BeamHypothesis(
                     pieceKey: childKey,
@@ -410,16 +476,10 @@ final class FrenchTranscriber: @unchecked Sendable {
                     curEnd: f,
                     curPeaks: [peakProb],
                     history: newHistory,
-                    committedLMScore: newCommittedLM,
-                    lookaheadLMScore: newLookahead
+                    committedLMScore: newCommittedLM
                 )
             } else {
                 let updatedWord = (state.curWord ?? "") + piece
-                let updatedClean = Self.cleanWordForLM(updatedWord)
-                let newLookahead: Float = updatedClean.isEmpty
-                    ? 0.0
-                    : (alpha * lm.logp(history: state.history, symbol: updatedClean) * Self.ln10 + beta)
-
                 var newPeaks = state.curPeaks
                 newPeaks.append(peakProb)
 
@@ -434,8 +494,7 @@ final class FrenchTranscriber: @unchecked Sendable {
                     curEnd: f,
                     curPeaks: newPeaks,
                     history: state.history,
-                    committedLMScore: state.committedLMScore,
-                    lookaheadLMScore: newLookahead
+                    committedLMScore: state.committedLMScore
                 )
             }
         }
@@ -533,7 +592,10 @@ final class FrenchTranscriber: @unchecked Sendable {
             }
         }
 
-        guard let best = beams.values.max(by: { $0.totalScore < $1.totalScore }) else {
+        guard let best = beams.values.max(by: {
+            $0.finalScore(lm: lm, alpha: alpha, beta: beta, maxHist: maxHist)
+                < $1.finalScore(lm: lm, alpha: alpha, beta: beta, maxHist: maxHist)
+        }) else {
             return []
         }
         return best.flushAll(offsetSeconds: offsetSeconds, frameSeconds: frameSec)
@@ -562,11 +624,12 @@ final class FrenchTranscriber: @unchecked Sendable {
 
         func flush() {
             guard let w = curWord, !w.isEmpty, !curPeaks.isEmpty else { return }
+            let canonicalWord = FrenchITN.canonicalizeGluedNumberWord(w)
             let logSum = curPeaks.reduce(0.0) { $0 + log(max($1, 1e-6)) }
             let conf = exp(logSum / Double(curPeaks.count))
             let startSec = (offsetSeconds + Double(curStart) * frameSec * 1000.0).rounded() / 1000.0
             let endSec = (offsetSeconds + Double(curEnd + 1) * frameSec * 1000.0).rounded() / 1000.0
-            words.append(WordTiming(word: w, start: startSec, end: endSec, confidence: (conf * 1000.0).rounded() / 1000.0))
+            words.append(WordTiming(word: canonicalWord, start: startSec, end: endSec, confidence: (conf * 1000.0).rounded() / 1000.0))
         }
 
         for f in 0..<validFrames {

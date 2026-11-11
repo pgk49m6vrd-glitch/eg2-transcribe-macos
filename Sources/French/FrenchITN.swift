@@ -182,6 +182,102 @@ enum FrenchITN {
         let endIndex: Int
     }
 
+    /// Canonical French number lexemes ordered longest-first for deterministic DP segmentation of glued CTC tokens
+    /// (e.g. "soixantetrois" -> ["soixante", "trois"], "quatrevingtdixneuf" -> ["quatre", "vingt", "dix", "neuf"]).
+    private static let canonicalAtomSet: Set<String> = [
+        "milliards", "milliard", "millions", "million",
+        "quatorze", "quarante", "cinquante", "soixante",
+        "septante", "huitante", "octante", "nonante",
+        "treize", "quinze", "trente", "vingts", "quatre",
+        "milles", "mille", "seize", "douze", "trois",
+        "cents", "vingt", "onze", "neuf", "huit",
+        "sept", "cinq", "deux", "cent", "zéro", "zero",
+        "dix", "six", "une", "un", "et",
+    ]
+
+    /// Elided stems that CTC may emit when a silent final 'e' or 't' is dropped inside a compound number
+    /// (e.g. "soixanttrois", "quatrevingtrois", "quarantdeux").
+    private static let elidedAtomMap: [String: String] = [
+        "soixant": "soixante",
+        "cinquant": "cinquante",
+        "quarant": "quarante",
+        "trent": "trente",
+        "ving": "vingt",
+    ]
+
+    private static let allSegmentationKeys: [String] = {
+        let all = Array(canonicalAtomSet) + Array(elidedAtomMap.keys)
+        return all.sorted { $0.count > $1.count }
+    }()
+
+    /// Segments a lowercase token (without hyphens) into canonical French number atoms if and only if
+    /// the entire string is an exact concatenation of French number lexemes.
+    static func segmentGluedNumber(_ token: String) -> [String]? {
+        guard !token.isEmpty else { return nil }
+        if canonicalAtomSet.contains(token) {
+            return [token]
+        }
+        let chars = Array(token)
+        let n = chars.count
+        var dp = [[String]?](repeating: nil, count: n + 1)
+        dp[0] = []
+
+        for i in 0..<n {
+            guard let prefixAtoms = dp[i] else { continue }
+            let rem = String(chars[i..<n])
+            for key in allSegmentationKeys {
+                if rem.hasPrefix(key) {
+                    let nextPos = i + key.count
+                    let canonical = canonicalAtomSet.contains(key) ? key : (elidedAtomMap[key] ?? key)
+                    let candidate = prefixAtoms + [canonical]
+                    if let existing = dp[nextPos] {
+                        if candidate.count < existing.count {
+                            dp[nextPos] = candidate
+                        }
+                    } else {
+                        dp[nextPos] = candidate
+                    }
+                }
+            }
+        }
+
+        guard let result = dp[n] else { return nil }
+        // Reject single-atom elided matches (e.g. standalone "ving" or "trent")
+        if result.count == 1 && !canonicalAtomSet.contains(token) {
+            return nil
+        }
+        return result
+    }
+
+    /// Restores missing hyphens in glued compound French number words (e.g. "soixantetrois" -> "soixante-trois")
+    /// while leaving all non-number words untouched.
+    static func canonicalizeGluedNumberWord(_ word: String) -> String {
+        let part = splitPunctuation(word)
+        guard !part.core.contains("-"),
+              part.atoms.count >= 2
+        else { return word }
+
+        var total: Int64 = 0
+        var current: Int64 = 0
+        var hasAny = false
+        for (idx, atom) in part.atoms.enumerated() {
+            if atom == "et" {
+                let rem = current % 100
+                let validTens = (rem == 20 || rem == 30 || rem == 40 || rem == 50 || rem == 60 || rem == 70)
+                let nextAtom = (idx + 1 < part.atoms.count) ? part.atoms[idx + 1] : nil
+                if validTens, let na = nextAtom, (na == "un" || na == "une" || na == "onze") {
+                    continue
+                }
+                return word
+            }
+            if !stepNumberAutomaton(atom: atom, total: &total, current: &current, hasAny: &hasAny) {
+                return word
+            }
+        }
+        guard hasAny else { return word }
+        return "\(part.leadingPunct)\(part.atoms.joined(separator: "-"))\(part.trailingPunct)"
+    }
+
     private static func matchNumberSpan(
         parts: [TokenParts],
         startIndex: Int,
@@ -199,12 +295,19 @@ enum FrenchITN {
         var wordIdx = startIndex
         while wordIdx < parts.count {
             let part = parts[wordIdx]
+
+            // Allow a standalone hyphen token ("-") between two number words
+            if wordIdx > startIndex && part.atoms.isEmpty && (part.core == "-" || part.leadingPunct == "-" || part.trailingPunct == "-") {
+                wordIdx += 1
+                continue
+            }
+
             if wordIdx > startIndex && !part.leadingPunct.isEmpty {
                 break
             }
             guard !part.atoms.isEmpty else { break }
 
-            // Try to consume all hyphen-connected atoms in `part.atoms`
+            // Try to consume all atoms in `part.atoms`
             var tempTotal = total
             var tempCurrent = current
             var tempHasAny = hasAnyDigit
@@ -214,13 +317,17 @@ enum FrenchITN {
             while aIdx < part.atoms.count {
                 let atom = part.atoms[aIdx]
                 if atom == "et" {
-                    // "et" is only valid after 20, 30, 40, 50, 60, 70 when followed by "un"/"une"/"onze"
+                    // "et" is valid after 20, 30, 40, 50, 60, 70 when followed by "un"/"une"/"onze",
+                    // or after "cent"/"mille" in spoken French ("mille neuf cent et soixante-trois")
                     let rem = tempCurrent % 100
                     let validTens = (rem == 20 || rem == 30 || rem == 40 || rem == 50 || rem == 60 || rem == 70)
                     let nextAtom: String? = (aIdx + 1 < part.atoms.count)
                         ? part.atoms[aIdx + 1]
                         : (part.trailingPunct.isEmpty && wordIdx + 1 < parts.count ? parts[wordIdx + 1].atoms.first : nil)
                     if validTens, let na = nextAtom, (na == "un" || na == "une" || na == "onze") {
+                        aIdx += 1
+                        continue
+                    } else if tempHasAny && rem == 0 && (tempCurrent >= 100 || tempTotal >= 1000) && nextAtom != nil {
                         aIdx += 1
                         continue
                     } else {
@@ -246,9 +353,17 @@ enum FrenchITN {
             atomCount += part.atoms.count
             lastConsumedWordIndex = wordIdx
 
-            // Stop at trailing punctuation (e.g. "quatre, cinq" -> two separate numbers)
             if !part.trailingPunct.isEmpty {
-                break
+                // If CTC inserted a breath comma right after "mille" or "cent" (e.g. "mille neuf cent, soixante-trois"),
+                // allow continuing the number if the next token validly extends `total + current`.
+                let lastAtom = part.atoms.last ?? ""
+                let isMidMultiplierComma = (part.trailingPunct == ",")
+                    && (lastAtom == "cent" || lastAtom == "cents" || lastAtom == "mille" || lastAtom == "milles")
+                    && (wordIdx + 1 < parts.count)
+                    && isNumberToken(parts[wordIdx + 1])
+                if !isMidMultiplierComma {
+                    break
+                }
             }
             wordIdx += 1
         }
@@ -332,6 +447,12 @@ enum FrenchITN {
                 current += u
                 hasAny = true
                 return true
+            } else if u == 4 && total == 0 && current >= 11 && current <= 19 {
+                // Spoken 4-digit year with "quatre-vingt..." e.g. "dix-neuf quatre-vingt-quatre" (1984)
+                total = current * 100
+                current = 4
+                hasAny = true
+                return true
             }
             return false
         }
@@ -349,6 +470,13 @@ enum FrenchITN {
                 hasAny = true
                 return true
             }
+            if total == 0 && current >= 11 && current <= 19 {
+                // Spoken 4-digit year without "cent": e.g. "dix-neuf soixante-trois" -> 1963
+                total = current * 100
+                current = t
+                hasAny = true
+                return true
+            }
             return false
         }
 
@@ -362,7 +490,7 @@ enum FrenchITN {
                 hasAny = true
                 return true
             } else if current >= 11 && current <= 19 && total == 0 {
-                // e.g. "douze cents" (1200)
+                // e.g. "douze cents" (1200), "dix-neuf cent soixante-trois" (1963)
                 total = current * 100
                 current = 0
                 hasAny = true
@@ -423,10 +551,18 @@ enum FrenchITN {
         let leading = String(String.UnicodeScalarView(scalars[0..<start]))
         let core = String(String.UnicodeScalarView(scalars[start..<end]))
         let trailing = String(String.UnicodeScalarView(scalars[end..<scalars.count]))
-        let atoms = core
+        let rawHyphenParts = core
             .lowercased()
             .split(separator: "-", omittingEmptySubsequences: true)
             .map(String.init)
+        var atoms: [String] = []
+        for sub in rawHyphenParts {
+            if let segmented = segmentGluedNumber(sub) {
+                atoms.append(contentsOf: segmented)
+            } else {
+                atoms.append(sub)
+            }
+        }
         return TokenParts(leadingPunct: leading, core: core, trailingPunct: trailing, atoms: atoms)
     }
 }

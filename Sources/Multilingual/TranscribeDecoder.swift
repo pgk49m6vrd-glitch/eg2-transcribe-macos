@@ -252,17 +252,18 @@ final class NGramLM: @unchecked Sendable {
         lock.unlock()
 
         var backoff: Float = 0
-        var result = unknown
+        var matched: Float?
         for k in stride(from: h.count, through: 0, by: -1) {
             let ctx = h[(h.count - k)...]
             if let (p, _) = find(ctx + [symbol]) {
-                result = backoff + p
+                matched = backoff + p
                 break
             }
             if k > 0, let (_, b) = find(ctx) {
                 backoff += b
             }
         }
+        let result = matched ?? (backoff + unknown)
 
         lock.lock()
         if cache.count > 40_000 { cache.removeAll(keepingCapacity: true) }

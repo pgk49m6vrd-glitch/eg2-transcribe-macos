@@ -26,6 +26,51 @@ D = 0.75
 STRIP_CHARS = ".,;:!?\"'()[]{}«»—–-… \t\r\n"
 
 
+def _fr_below_100(n: int) -> str:
+    units = [
+        "zéro", "un", "deux", "trois", "quatre", "cinq", "six", "sept", "huit", "neuf",
+        "dix", "onze", "douze", "treize", "quatorze", "quinze", "seize", "dix-sept", "dix-huit", "dix-neuf",
+    ]
+    tens = ["", "", "vingt", "trente", "quarante", "cinquante", "soixante"]
+    if n < 20:
+        return units[n]
+    if n < 70:
+        t, u = divmod(n, 10)
+        if u == 0:
+            return tens[t]
+        if u == 1:
+            return f"{tens[t]}-et-un"
+        return f"{tens[t]}-{units[u]}"
+    if n < 80:
+        u = n - 60
+        if u == 11:
+            return "soixante-et-onze"
+        return f"soixante-{units[u]}"
+    if n == 80:
+        return "quatre-vingts"
+    u = n - 80
+    return f"quatre-vingt-{units[u]}"
+
+
+def int_to_fr(n: int) -> str:
+    if n < 100:
+        return _fr_below_100(n)
+    if n < 1000:
+        h, r = divmod(n, 100)
+        prefix = "cent" if h == 1 else f"{_fr_below_100(h)} cent"
+        if r == 0:
+            return prefix if h == 1 else f"{prefix}s"
+        return f"{prefix} {_fr_below_100(r)}"
+    th, r = divmod(n, 1000)
+    prefix = "mille" if th == 1 else f"{int_to_fr(th)} mille"
+    if r == 0:
+        return prefix
+    return f"{prefix} {int_to_fr(r)}"
+
+
+FR_NUM_WORDS: dict[str, list[str]] = {str(i): int_to_fr(i).split() for i in range(10000)}
+
+
 def clean_word(w: str) -> str:
     """Normalizes a surface token to match `FrenchTranscriber.cleanWordForLM` in Swift."""
     w = w.replace("\u2019", "'").replace("\u2018", "'").strip(STRIP_CHARS).lower()
@@ -45,6 +90,16 @@ def fnv64(s: str) -> int:
 def load_vocab_from_unigrams(unigrams_path: Path, max_vocab: int = 64000) -> tuple[dict[str, int], list[str]]:
     stoi = {BOS: 0, UNK: 1}
     itos = [BOS, UNK]
+    # Ensure all standard French number words (0..99) are in the vocabulary
+    for i in range(100):
+        w = _fr_below_100(i)
+        if w not in stoi:
+            stoi[w] = len(itos)
+            itos.append(w)
+    for extra in ["cent", "cents", "mille", "million", "millions", "milliard", "milliards", "virgule", "point"]:
+        if extra not in stoi:
+            stoi[extra] = len(itos)
+            itos.append(extra)
     with open(unigrams_path, encoding="utf-8") as f:
         for line in f:
             w = clean_word(line)
@@ -59,10 +114,48 @@ def load_vocab_from_unigrams(unigrams_path: Path, max_vocab: int = 64000) -> tup
 def tokenize_sentence(text: str, stoi: dict[str, int]) -> list[int]:
     out: list[int] = []
     for raw in text.replace("\n", " ").split():
+        stripped = raw.strip(STRIP_CHARS)
+        if stripped in FR_NUM_WORDS:
+            for nw in FR_NUM_WORDS[stripped]:
+                out.append(stoi.get(nw, 1))
+            continue
         w = clean_word(raw)
         if w:
             out.append(stoi.get(w, 1))
     return out
+
+
+def generate_spoken_number_corpus():
+    """Yields natural French spoken number expressions so all number transitions (e.g. 'mille neuf cent soixante-trois')
+    have strong 2-gram, 3-gram, and 4-gram probabilities."""
+    # 1. All numbers 0..9999 in both hyphenated and space-separated forms
+    for n in range(10000):
+        words = int_to_fr(n)
+        yield words
+        if "-" in words:
+            yield words.replace("-", " ")
+
+    # 2. Years 1100..2099 in common spoken phrases + "dix-neuf cent ..." form
+    prefixes = ["en", "depuis", "vers", "année", "né en", "en l'an", "numéro", "ticket", "page", "ligne"]
+    for yr in range(1100, 2100):
+        std = int_to_fr(yr)
+        p = prefixes[yr % len(prefixes)]
+        yield f"{p} {std}"
+        yield f"{p} {std.replace('-', ' ')}"
+        if 1100 <= yr < 2000:
+            h, r = divmod(yr, 100)
+            alt = f"{_fr_below_100(h)} cents" if r == 0 else f"{_fr_below_100(h)} cent {_fr_below_100(r)}"
+            yield f"{p} {alt}"
+            yield f"{p} {alt.replace('-', ' ')}"
+
+    # 3. Percentages, decimals, and technical dictation triggers
+    for n in range(1, 200):
+        w = int_to_fr(n)
+        yield f"{w} pour cent"
+        yield f"{w} euros"
+        yield f"ticket {w}"
+        yield f"version {_fr_below_100(n % 20)} point {_fr_below_100((n * 3) % 20)}"
+        yield f"{_fr_below_100(n % 50)} virgule {_fr_below_100((n * 7) % 100)}"
 
 
 def build_stream(sentence_iter, stoi: dict[str, int], order: int) -> np.ndarray:
@@ -161,8 +254,8 @@ def build_kneser_ney(stream: np.ndarray, itos: list[str], order: int = 4, budget
             elif all(x == 0 for x in key):
                 entries[key] = [0.0, float(b)]
 
-    unk = math.log10(0.5 / (cont_total + 5000))
-    print(f"  Retained {len(entries):,} entries ({time.time() - t0:.1f}s)", flush=True)
+    unk = math.log10(0.05 / (cont_total + 5000))
+    print(f"  Retained {len(entries):,} entries ({time.time() - t0:.1f}s), unk={unk:.3f}", flush=True)
     return entries, unk
 
 
@@ -207,7 +300,7 @@ class VerifyBackoffLM:
                 j = self._find(hh)
                 if j >= 0:
                     bo += float(self.b[j])
-        return self.unk
+        return bo + self.unk
 
     def sentence_score(self, words: list[str]) -> float:
         hist: list[str] = []
@@ -223,6 +316,11 @@ class VerifyBackoffLM:
 def stream_hf_corpora(wiki_chars: int = 45_000_000, spoken_weight: int = 3):
     from huggingface_hub import hf_hub_download
     import pyarrow.parquet as pq
+
+    print("Generating spoken French numbers & years corpus...", flush=True)
+    for _ in range(3):
+        for line in generate_spoken_number_corpus():
+            yield line
 
     print("Downloading spoken French transcripts (manu/french_librispeech_text_only)...", flush=True)
     mls_parquet = hf_hub_download(
@@ -286,7 +384,7 @@ def main():
     out_path.parent.mkdir(parents=True, exist_ok=True)
     write_jnlm(entries, itos, unk, args.order, out_path)
 
-    # Verify homophone disambiguation on standard French test pairs
+    # Verify homophone disambiguation & French spoken numbers on standard French test pairs
     lm = VerifyBackoffLM(out_path)
     pairs = [
         (["il", "a", "pris", "le", "train"], ["il", "à", "pris", "le", "train"]),
@@ -294,14 +392,16 @@ def main():
         (["il", "s'est", "passé", "quelque", "chose"], ["il", "c'est", "passé", "quelque", "chose"]),
         (["la", "ville", "où", "j'habite"], ["la", "ville", "ou", "j'habite"]),
         (["ils", "ont", "terminé", "le", "travail"], ["ils", "on", "terminer", "le", "travail"]),
+        (["mille", "neuf", "cent", "soixante-trois"], ["mille", "neuf", "cent", "soixantetrois"]),
+        (["ticket", "quatre", "cent", "douze"], ["ticket", "quatre", "sans", "douze"]),
     ]
-    print("Verifying French homophone disambiguation with lm_fr.bin:")
+    print("Verifying French homophone & number disambiguation with lm_fr.bin:")
     for good, bad in pairs:
         s_good = lm.sentence_score(good)
         s_bad = lm.sentence_score(bad)
         print(f"  {' '.join(good):35s} ({s_good:6.2f}) vs {' '.join(bad):35s} ({s_bad:6.2f}) -> Δ = {s_good - s_bad:+.2f}")
         if s_good <= s_bad:
-            raise RuntimeError(f"LM failed homophone check: {good} <= {bad}")
+            raise RuntimeError(f"LM failed disambiguation check: {good} <= {bad}")
 
 
 if __name__ == "__main__":

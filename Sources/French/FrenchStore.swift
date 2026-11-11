@@ -26,8 +26,8 @@ enum FrenchStore {
     )
 
     static let lmAsset = AssetSpec(
-        filename: "lm_fr.bin",
-        expectedBytes: 48_000_000,
+        filename: "lm_fr_v2.bin",
+        expectedBytes: 29_000_000,
         minValidBytes: 5_000_000
     )
 
@@ -63,6 +63,7 @@ enum FrenchStore {
         let fm = FileManager.default
         let root = downloadedFolder
         try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        try? fm.removeItem(at: root.appending(path: "lm_fr.bin"))
 
         let needModel = !fm.fileExists(atPath: root.appending(path: "StenoFr.mlmodelc").path)
             && !fm.fileExists(atPath: root.appending(path: "StenoFr.mlpackage/Manifest.json").path)

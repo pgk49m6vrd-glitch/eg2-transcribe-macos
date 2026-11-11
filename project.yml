@@ -19,8 +19,8 @@ schemes:
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    MARKETING_VERSION: "1.2.0"
-    CURRENT_PROJECT_VERSION: "3"
+    MARKETING_VERSION: "1.2.1"
+    CURRENT_PROJECT_VERSION: "4"
     GENERATE_INFOPLIST_FILE: "YES"
     INFOPLIST_KEY_CFBundleDisplayName: "EG2 Transcribe"
     INFOPLIST_KEY_NSMicrophoneUsageDescription: "EG2 Transcribe utilise le microphone pour transcrire votre voix localement sur ce Mac avec EmbeddingGemma 2."
