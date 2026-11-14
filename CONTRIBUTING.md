@@ -121,7 +121,7 @@ This is wrong.
 For private feedback, general suggestions, or non-public concerns, you can contact the maintainer at:
 
 ```text
-feedback_to_atlascorejsx@proton.me
+atlascorejsx@proton.me
 ```
 
 Use email when:
